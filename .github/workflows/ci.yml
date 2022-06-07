@@ -57,14 +57,14 @@ jobs:
       - uses: actions/checkout@v2
       - uses: actions-rs/toolchain@v1
         with:
-          toolchain: 1.52.0
+          toolchain: 1.54.0
           target: thumbv7em-none-eabihf
           override: true
           profile: minimal
       - uses: actions-rs/cargo@v1
         with:
           command: check
-          args: --features=stm32f303xc,stm32-usbd,rt,can,ld --lib --examples
+          args: --features=stm32f303xc,stm32-usbd,rt,can,ld --lib
 
   check-min-deps:
     name: Check Minimal Dependency Versions
@@ -205,3 +205,10 @@ jobs:
       uses: lycheeverse/lychee-action@v1.0.8
       with:
         args: --verbose --no-progress "**/*.md" "**/*.rs" "Cargo.toml" "**/Cargo.toml" -h accept=text/html
+
+  cargo-deny:
+    name: Cargo Deny
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@v2
+    - uses: EmbarkStudios/cargo-deny-action@v1

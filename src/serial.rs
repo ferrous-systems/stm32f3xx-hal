@@ -22,7 +22,7 @@ use crate::{
         usart1::{cr1::M_A, cr1::PCE_A, cr1::PS_A, RegisterBlock},
         Interrupt, USART1, USART2, USART3,
     },
-    rcc::{Clocks, APB1, APB2},
+    rcc::{self, Clocks},
     time::rate::*,
     Toggle,
 };
@@ -46,6 +46,7 @@ use cortex_m::interrupt;
 #[cfg_attr(feature = "enumset", derive(EnumSetType))]
 #[cfg_attr(not(feature = "enumset"), derive(Copy, Clone, PartialEq, Eq))]
 #[non_exhaustive]
+// TODO: Split up in transmission and reception events (RM0316 29.7)
 pub enum Event {
     /// Transmit data register empty / new data can be sent.
     ///
@@ -462,7 +463,7 @@ where
         pins: (Tx, Rx),
         config: Config,
         clocks: Clocks,
-        apb: &mut <Usart as Instance>::APB,
+        apb: &mut <Usart as rcc::RccBus>::Bus,
     ) -> Self
     where
         Usart: Instance,
@@ -475,7 +476,8 @@ where
         let config = config.into();
 
         // Enable USART peripheral for any further interaction.
-        Usart::enable_clock(apb);
+        Usart::enable(apb);
+        Usart::reset(apb);
         // Disable USART because some configuration bits could only be written
         // in this state.
         usart.cr1.modify(|_, w| w.ue().disabled());
@@ -574,8 +576,13 @@ where
     /// the triggered events via [`Serial::triggered_events`].
     ///
     /// Returns `None` if the hardware is busy.
+    ///
+    /// ## Embedded HAL
+    ///
+    /// To have a more managed way to read from the serial use the [`embeded_hal::serial::Read`]
+    /// trait implementation.
     #[doc(alias = "RDR")]
-    pub fn raw_read(&self) -> Option<u8> {
+    pub fn read_data_register(&self) -> Option<u8> {
         if self.usart.isr.read().busy().bit_is_set() {
             return None;
         }
@@ -665,6 +672,43 @@ where
         for event in events.iter() {
             self.configure_interrupt(event, true);
         }
+    }
+
+    /// Check if an interrupt is configured for the [`Event`]
+    #[inline]
+    pub fn is_interrupt_configured(&self, event: Event) -> bool {
+        match event {
+            Event::TransmitDataRegisterEmtpy => self.usart.cr1.read().txeie().is_enabled(),
+            Event::CtsInterrupt => self.usart.cr3.read().ctsie().is_enabled(),
+            Event::TransmissionComplete => self.usart.cr1.read().tcie().is_enabled(),
+            Event::ReceiveDataRegisterNotEmpty => self.usart.cr1.read().rxneie().is_enabled(),
+            Event::ParityError => self.usart.cr1.read().peie().is_enabled(),
+            Event::LinBreak => self.usart.cr2.read().lbdie().is_enabled(),
+            Event::NoiseError | Event::OverrunError | Event::FramingError => {
+                self.usart.cr3.read().eie().is_enabled()
+            }
+            Event::Idle => self.usart.cr1.read().idleie().is_enabled(),
+            Event::CharacterMatch => self.usart.cr1.read().cmie().is_enabled(),
+            Event::ReceiverTimeout => self.usart.cr1.read().rtoie().is_enabled(),
+            // Event::EndOfBlock => self.usart.cr1.read().eobie().is_enabled(),
+            // Event::WakeupFromStopMode => self.usart.cr3.read().wufie().is_enabled(),
+        }
+    }
+
+    /// Check which interrupts are enabled for all [`Event`]s
+    #[cfg(feature = "enumset")]
+    #[cfg_attr(docsrs, doc(cfg(feature = "enumset")))]
+    #[inline]
+    pub fn configured_interrupts(&mut self) -> EnumSet<Event> {
+        let mut events = EnumSet::new();
+
+        for event in EnumSet::<Event>::all().iter() {
+            if self.is_interrupt_configured(event) {
+                events |= event;
+            }
+        }
+
+        events
     }
 
     /// Check if an interrupt event happend.
@@ -905,7 +949,7 @@ where
     /// up to the interrupt handler.
     ///
     /// To read out the content of the read register without internal error handling, use
-    /// [`Serial::raw_read()`].
+    /// [`Serial::read()`].
     /// ...
     // -> According to this API it should be skipped.
     fn read(&mut self) -> nb::Result<u8, Error> {
@@ -1181,13 +1225,12 @@ impl ReceiverTimeoutExt for USART3 {}
 
 /// UART instance
 pub trait Instance:
-    Deref<Target = RegisterBlock> + crate::interrupts::InterruptNumber + crate::private::Sealed
+    Deref<Target = RegisterBlock>
+    + crate::interrupts::InterruptNumber
+    + crate::private::Sealed
+    + rcc::Enable
+    + rcc::Reset
 {
-    /// Peripheral bus instance which is responsible for the peripheral
-    type APB;
-
-    #[doc(hidden)]
-    fn enable_clock(apb1: &mut Self::APB);
     #[doc(hidden)]
     fn clock(clocks: &Clocks) -> Hertz;
 }
@@ -1195,40 +1238,14 @@ pub trait Instance:
 macro_rules! usart {
     (
         $(
-            $USARTX:ident: (
-                $usartXen:ident,
-                $APB:ident,
-                $INTERRUPT:path,
-                $pclkX:ident,
-                $usartXrst:ident,
-                $usartXsw:ident,
-                $usartXclock:ident
-            ),
+            $USARTX:ident: ($INTERRUPT:path),
         )+
     ) => {
         $(
-            impl crate::private::Sealed for $USARTX {}
             impl crate::interrupts::InterruptNumber for $USARTX {
                 type Interrupt = Interrupt;
                 const INTERRUPT: Interrupt = $INTERRUPT;
             }
-
-            impl Instance for $USARTX {
-                type APB = $APB;
-                fn enable_clock(apb: &mut Self::APB) {
-                    apb.enr().modify(|_, w| w.$usartXen().enabled());
-                    apb.rstr().modify(|_, w| w.$usartXrst().reset());
-                    apb.rstr().modify(|_, w| w.$usartXrst().clear_bit());
-                }
-
-                fn clock(clocks: &Clocks) -> Hertz {
-                    // Use the function created via another macro outside of this one,
-                    // because the implementation is dependend on the type $USARTX.
-                    // But macros can not differentiate between types.
-                    $usartXclock(clocks)
-                }
-            }
-
 
             impl<Tx, Rx> Serial<$USARTX, (Tx, Rx)>
                 where Tx: TxPin<$USARTX>, Rx: RxPin<$USARTX> {
@@ -1285,19 +1302,11 @@ macro_rules! usart {
         )+
     };
 
-    ([ $(($X:literal, $APB:literal, $INTERRUPT:path)),+ ]) => {
+    ([ $(($X:literal, $INTERRUPT:path)),+ ]) => {
         paste::paste! {
             usart!(
                 $(
-                    [<USART $X>]: (
-                        [<usart $X en>],
-                        [<APB $APB>],
-                        $INTERRUPT,
-                        [<pclk $APB>],
-                        [<usart $X rst>],
-                        [<usart $X sw>],
-                        [<usart $X clock>]
-                    ),
+                    [<USART $X>]: ($INTERRUPT),
                 )+
             );
         }
@@ -1308,19 +1317,19 @@ macro_rules! usart {
 /// the only clock source can be the peripheral clock
 #[allow(unused_macros)]
 macro_rules! usart_static_clock {
-    ($($usartXclock:ident, $pclkX:ident),+) => {
+    ($($USARTX:ident),+) => {
         $(
-            /// Return the currently set source frequency the UART peripheral
-            /// depending on the clock source.
-            fn $usartXclock(clocks: &Clocks) -> Hertz {
-                clocks.$pclkX()
+            impl Instance for $USARTX {
+                fn clock(clocks: &Clocks) -> Hertz {
+                    <$USARTX as rcc::BusClock>::clock(clocks)
+                }
             }
         )+
     };
-    ([ $(($X:literal, $APB:literal)),+ ]) => {
+    ($($X:literal),+) => {
         paste::paste! {
             usart_static_clock!(
-                $([<usart $X clock>], [<pclk $APB>]),+
+                $([<USART $X>]),+
             );
         }
     };
@@ -1329,25 +1338,25 @@ macro_rules! usart_static_clock {
 /// Generates a clock function for UART Peripherals, where
 /// the clock source can vary.
 macro_rules! usart_var_clock {
-    ($($usartXclock:ident, $usartXsw:ident, $pclkX:ident),+) => {
+    ($($USARTX:ident, $usartXsw:ident),+) => {
         $(
-            /// Return the currently set source frequency for the UART peripheral
-            /// depending on the clock source.
-            fn $usartXclock(clocks: &Clocks) -> Hertz {
-                // NOTE(unsafe): atomic read with no side effects
-                match unsafe {(*RCC::ptr()).cfgr3.read().$usartXsw().variant()} {
-                    USART1SW_A::PCLK => clocks.$pclkX(),
-                    USART1SW_A::HSI => crate::rcc::HSI,
-                    USART1SW_A::SYSCLK => clocks.sysclk(),
-                    USART1SW_A::LSE => crate::rcc::LSE,
+            impl Instance for $USARTX {
+                fn clock(clocks: &Clocks) -> Hertz {
+                    // NOTE(unsafe): atomic read with no side effects
+                    match unsafe {(*RCC::ptr()).cfgr3.read().$usartXsw().variant()} {
+                        USART1SW_A::PCLK => <$USARTX as rcc::BusClock>::clock(clocks),
+                        USART1SW_A::HSI => crate::rcc::HSI,
+                        USART1SW_A::SYSCLK => clocks.sysclk(),
+                        USART1SW_A::LSE => crate::rcc::LSE,
+                    }
                 }
             }
         )+
     };
-    ([ $(($X:literal, $APB:literal)),+ ]) => {
+    ($($X:literal),+) => {
         paste::paste! {
             usart_var_clock!(
-                $([<usart $X clock>], [<usart $X sw>], [<pclk $APB>]),+
+                $([<USART $X>], [<usart $X sw>]),+
             );
         }
     };
@@ -1369,26 +1378,26 @@ cfg_if::cfg_if! {
     ))] {
         // USART1 is accessed through APB2,
         // but USART1SW_A::PCLK will connect its phy to PCLK1.
-        usart_var_clock!([(1,1)]);
+        usart_var_clock!(1);
         // These are uart peripherals, where the only clock source
         // is the PCLK (peripheral clock).
-        usart_static_clock!([(2,1), (3,1)]);
+        usart_static_clock!(2, 3);
     } else {
-        usart_var_clock!([(1, 2), (2, 1), (3, 1)]);
+        usart_var_clock!(1, 2, 3);
     }
 }
 
 #[cfg(not(feature = "svd-f373"))]
 usart!([
-    (1, 2, Interrupt::USART1_EXTI25),
-    (2, 1, Interrupt::USART2_EXTI26),
-    (3, 1, Interrupt::USART3_EXTI28)
+    (1, Interrupt::USART1_EXTI25),
+    (2, Interrupt::USART2_EXTI26),
+    (3, Interrupt::USART3_EXTI28)
 ]);
 #[cfg(feature = "svd-f373")]
 usart!([
-    (1, 2, Interrupt::USART1),
-    (2, 1, Interrupt::USART2),
-    (3, 1, Interrupt::USART3)
+    (1, Interrupt::USART1),
+    (2, Interrupt::USART2),
+    (3, Interrupt::USART3)
 ]);
 
 cfg_if::cfg_if! {
@@ -1396,19 +1405,11 @@ cfg_if::cfg_if! {
     if #[cfg(any(feature = "gpio-f303", feature = "gpio-f303e"))] {
 
         macro_rules! uart {
-            ([ $(($X:literal, $APB:literal, $INTERRUPT:path)),+ ]) => {
+            ([ $(($X:literal, $INTERRUPT:path)),+ ]) => {
                 paste::paste! {
                     usart!(
                         $(
-                            [<UART $X>]: (
-                                [<uart $X en>],
-                                [<APB $APB>],
-                                $INTERRUPT,
-                                [<pclk $APB>],
-                                [<uart $X rst>],
-                                [<uart $X sw>],
-                                [<usart $X clock>]
-                            ),
+                            [<UART $X>]: ($INTERRUPT),
                         )+
                     );
                 }
@@ -1416,17 +1417,17 @@ cfg_if::cfg_if! {
         }
 
         macro_rules! uart_var_clock {
-            ([ $(($X:literal, $APB:literal)),+ ]) => {
+            ($($X:literal),+) => {
                 paste::paste! {
                     usart_var_clock!(
-                        $([<usart $X clock>], [<uart $X sw>], [<pclk $APB>]),+
+                        $([<UART $X>], [<uart $X sw>]),+
                     );
                 }
             };
         }
 
-        uart_var_clock!([(4,1), (5,1)]);
-        uart!([(4,1, Interrupt::UART4_EXTI34), (5,1, Interrupt::UART5_EXTI35)]);
+        uart_var_clock!(4, 5);
+        uart!([(4, Interrupt::UART4_EXTI34), (5, Interrupt::UART5_EXTI35)]);
 
         impl Dma for UART4 {}
 

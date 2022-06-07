@@ -9,15 +9,14 @@
 //!
 //! A usage example of the can peripheral can be found at [examples/can.rs]
 //!
-//! [examples/can.rs]: https://github.com/stm32-rs/stm32f3xx-hal/blob/v0.8.0/examples/can.rs
+//! [examples/can.rs]: https://github.com/stm32-rs/stm32f3xx-hal/blob/v0.9.0/examples/can.rs
 
 use crate::gpio::{gpioa, gpiob};
 use crate::gpio::{PushPull, AF9};
 use crate::pac;
 
-use crate::rcc::APB1;
+use crate::rcc::{Enable, Reset, APB1};
 
-pub use bxcan;
 use bxcan::RegisterBlock;
 
 use cfg_if::cfg_if;
@@ -55,18 +54,12 @@ where
     Tx: TxPin,
     Rx: RxPin,
 {
-    /// Create a new CAN instance, using the specified TX and RX pins.
-    ///
-    /// Note: this does not actually initialize the CAN bus.
-    /// You will need to first call [`bxcan::Can::new`] and  set the bus configuration and filters
-    /// before the peripheral can be enabled.
-    /// See the CAN example, for a more thorough example of the full setup process.
-    pub fn new(can: pac::CAN, tx: Tx, rx: Rx, apb1: &mut APB1) -> bxcan::Can<Self> {
-        apb1.enr().modify(|_, w| w.canen().enabled());
-        apb1.rstr().modify(|_, w| w.canrst().set_bit());
-        apb1.rstr().modify(|_, w| w.canrst().clear_bit());
+    /// Create a new `bxcan::CAN` instance.
+    pub fn new(can: pac::CAN, tx: Tx, rx: Rx, apb1: &mut APB1) -> Self {
+        pac::CAN::enable(apb1);
+        pac::CAN::reset(apb1);
 
-        bxcan::Can::new(Can { can, tx, rx })
+        Can { can, tx, rx }
     }
 
     /// Releases the CAN peripheral and associated pins

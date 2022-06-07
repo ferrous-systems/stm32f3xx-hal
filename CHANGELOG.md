@@ -14,23 +14,85 @@ and this project adheres to [Semantic Versioning](http://semver.org/).
 
 ## Unreleased
 
+No changes.
+
+## [v0.9.0] - 2022-03-06
+
 ### Added
 
+- Generic `into_af_push_pull<A>` and `into_af_open_drain<A>` ([#308])
+- `BusClock` and `BusTimerClock` traits ([#302])
+- `RccBus`, `Enable`, `Reset` traits and implementations for peripherals ([#299])
 - Support cortex-m-rt `v0.7.0` but still allow `v0.6.13` ([#283])
+- Make timer `InterruptTypes` fields public to be useful. ([#304])
+- Add support for the internal **signature** peripheral ([#281])
+- Add common derives to `Toggle`. ([#281])
+- Add `is_interrupt_configured` and `configured_interrupts` function to
+  `serial::Serial` and `timer::Timer`. ([#281])
 
 ### Fixed
 
 - Fix `can` support. Can would not build for `stm32f302x6` for example.
   Also support `can` for every chip other than `stm32f301` and `stm32f318`.
   ([#283])
+- Fix wrong ADC votlage regulator startup time calculation effecting
+  calibration. ([#281])
 
 ### Breaking Changes
 
 - Make `rtc` an optional feature. Without that feature `rtcc` as a dependency is
   not needed. ([#283])
+- Update `rtcc` to `v0.3.0`. For a detailed changelog, go [here]. ([#314])
 - Enable `rt`, `usb`, `can`, `rtc` and `ld` feature by default.
   To disable that behavior, set `default-features = false`. ([#283])
-- The MSRV was bumped to 1.52 ([#283])
+- The MSRV was bumped to 1.54 ([#308])
+- Update `stm32f3` pac to v0.14.0 ([#282])
+- Remove the `bxcan` re-export. ([#304])
+- The LICENSE has been changed from BSD 0-clause to the familiar dual license
+  MIT / Apache 2.0. This has been done, as this fits the ecosystem better and
+  the dependencies where using the MIT / Apache 2.0 dual licensing already,
+  which resulted into the situtation, that BSD 0-clause was not affectivly
+  0-clause as MIT conditions had to be met anyways. (🧂 IANAL). ([#309])
+- Renamed `Serial::raw_read` to `Serial::read_data_register`. ([#281])
+- Seal `FlashExt` and `RccExt` traits. These are no longer implementable by
+  a user of this crate. ([#281])
+- Move ADC from a macro to a generic implementation, meaning that
+  it is possible to obtain an ADC instance via `Adc::new` instead of
+  `Adc::adc1`. ([#281])
+- Remove `adc::ClockMode` and the clock configuration of the ADC.
+  - Clock configuration effects the common ADC which inturn controls e.g. ADC1
+  and ADC2, which the old API did not resemble.
+  - The API provides no clock configuration for ADC peripherals yet, but
+  correctly acts upon changes done through the `pac`. ([#281])
+- Major rework of the ADC implementation: ([#281])
+  - Add `CommonAdc` support.
+  - Add internal sensor peripheral support like `TemeperaturSensor` and similar.
+  - Lift restriction of the ADC implementation for `stm32f303`, though
+  `stm32f373` is still not supported.
+  - Enable manual configuration of the Adc peripheral of most important features
+    - `ConversionMode`
+    - `Sequence` length
+    - `OverrunMode`
+    - etc.
+  - Leverage type states to:
+    - Allow a `Disabled` ADC, which can be manually calibrated.
+    - Allow a `OneShot` ADC implementation through `into_oneshot` with an
+    optimal configuration for the `OneShot` embedded-hal trait.
+  - Support every possible ADC channel.
+  - Add interrupt support.
+
+[here]: https://github.com/eldruin/rtcc-rs/blob/master/CHANGELOG.md#030---2022-02-19
+
+## [v0.8.2] - 2021-12-14
+
+- Add missing SPI impls for the `gpio-f303` device groups (e.g. stm32f303vc) ([#304])
+
+## [v0.8.1] - 2021-10-27
+
+### Fixed
+
+- ADC Channel SMP Register mismatch. ([#291])
+  - While `read()`ing a Pin mapped to channel `10` and unexpected panic happened.
 
 ## [v0.8.0] - 2021-08-16
 
@@ -492,7 +554,16 @@ let clocks = rcc
 [defmt]: https://github.com/knurling-rs/defmt
 [filter]: https://defmt.ferrous-systems.com/filtering.html
 
+[#314]: https://github.com/stm32-rs/stm32f3xx-hal/pull/314
+[#309]: https://github.com/stm32-rs/stm32f3xx-hal/pull/309
+[#308]: https://github.com/stm32-rs/stm32f3xx-hal/pull/308
+[#304]: https://github.com/stm32-rs/stm32f3xx-hal/pull/304
+[#302]: https://github.com/stm32-rs/stm32f3xx-hal/pull/302
+[#299]: https://github.com/stm32-rs/stm32f3xx-hal/pull/299
+[#291]: https://github.com/stm32-rs/stm32f3xx-hal/pull/291
 [#283]: https://github.com/stm32-rs/stm32f3xx-hal/pull/283
+[#282]: https://github.com/stm32-rs/stm32f3xx-hal/pull/282
+[#281]: https://github.com/stm32-rs/stm32f3xx-hal/pull/281
 [#278]: https://github.com/stm32-rs/stm32f3xx-hal/pull/278
 [#277]: https://github.com/stm32-rs/stm32f3xx-hal/pull/277
 [#273]: https://github.com/stm32-rs/stm32f3xx-hal/pull/273
@@ -584,6 +655,9 @@ let clocks = rcc
 [#2]: https://github.com/stm32-rs/stm32f3xx-hal/pull/2
 
 <!-- cargo-release: latest tag -->
+[v0.9.0]: https://github.com/stm32-rs/stm32f3xx-hal/releases/tag/v0.9.0
+[v0.8.1]: https://github.com/stm32-rs/stm32f3xx-hal/releases/tag/v0.8.1
+[v0.8.1]: https://github.com/stm32-rs/stm32f3xx-hal/releases/tag/v0.8.1
 [v0.8.0]: https://github.com/stm32-rs/stm32f3xx-hal/releases/tag/v0.8.0
 [v0.7.0]: https://github.com/stm32-rs/stm32f3xx-hal/releases/tag/v0.7.0
 [v0.6.1]: https://github.com/stm32-rs/stm32f3xx-hal/releases/tag/v0.6.1

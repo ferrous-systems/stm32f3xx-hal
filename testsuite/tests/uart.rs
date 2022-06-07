@@ -26,17 +26,21 @@ use hal::{
 
 use hal::interrupt;
 
-use core::array::IntoIter;
 use defmt::{assert, assert_eq, unwrap};
 
+use core::array::IntoIter;
 use core::sync::atomic::{AtomicBool, Ordering};
 
 static INTERRUPT_FIRED: AtomicBool = AtomicBool::new(false);
 
+type Serial1 = Serial<pac::USART1, (PA9<AF7<PushPull>>, PA10<AF7<PushPull>>)>;
+type SerialSlow = Serial<pac::USART2, (PA2<AF7<PushPull>>, PA3<AF7<OpenDrain>>)>;
+type SerialFast = Serial<pac::USART3, (PB10<AF7<PushPull>>, PB11<AF7<OpenDrain>>)>;
+
 struct State {
-    serial1: Option<Serial<pac::USART1, (PA9<AF7<PushPull>>, PA10<AF7<PushPull>>)>>,
-    serial_slow: Option<Serial<pac::USART2, (PA2<AF7<PushPull>>, PA3<AF7<OpenDrain>>)>>,
-    serial_fast: Option<Serial<pac::USART3, (PB10<AF7<PushPull>>, PB11<AF7<OpenDrain>>)>>,
+    serial1: Option<Serial1>,
+    serial_slow: Option<SerialSlow>,
+    serial_fast: Option<SerialFast>,
     clocks: Clocks,
     apb1: APB1,
     apb2: APB2,
@@ -121,26 +125,26 @@ mod tests {
         let serial_pair = SerialPair {
             0: gpioa
                 .pa9
-                .into_af7_push_pull(&mut gpioa.moder, &mut gpioa.otyper, &mut gpioa.afrh),
+                .into_af_push_pull(&mut gpioa.moder, &mut gpioa.otyper, &mut gpioa.afrh),
             1: gpioa
                 .pa10
-                .into_af7_push_pull(&mut gpioa.moder, &mut gpioa.otyper, &mut gpioa.afrh),
+                .into_af_push_pull(&mut gpioa.moder, &mut gpioa.otyper, &mut gpioa.afrh),
         };
         let cs_pair_1 = CrossSerialPair1 {
             0: gpioa
                 .pa2
-                .into_af7_push_pull(&mut gpioa.moder, &mut gpioa.otyper, &mut gpioa.afrl),
+                .into_af_push_pull(&mut gpioa.moder, &mut gpioa.otyper, &mut gpioa.afrl),
             1: gpiob
                 .pb11
-                .into_af7_open_drain(&mut gpiob.moder, &mut gpiob.otyper, &mut gpiob.afrh),
+                .into_af_open_drain(&mut gpiob.moder, &mut gpiob.otyper, &mut gpiob.afrh),
         };
         let cs_pair_2 = CrossSerialPair2 {
             0: gpiob
                 .pb10
-                .into_af7_push_pull(&mut gpiob.moder, &mut gpiob.otyper, &mut gpiob.afrh),
+                .into_af_push_pull(&mut gpiob.moder, &mut gpiob.otyper, &mut gpiob.afrh),
             1: gpioa
                 .pa3
-                .into_af7_open_drain(&mut gpioa.moder, &mut gpioa.otyper, &mut gpioa.afrl),
+                .into_af_open_drain(&mut gpioa.moder, &mut gpioa.otyper, &mut gpioa.afrl),
         };
 
         let serial1 = Serial::new(
@@ -394,6 +398,9 @@ mod tests {
             unwrap!(nb::block!(serial.write(b'A')).ok());
         });
 
+        // FIXME: This test is sensitive to timing and the event might already be triggered by a
+        // previous transmission. (More details about IDLE event RM0316 29.8.1)
+        #[cfg(feature = "disabled")]
         trigger_event(Event::Idle, &mut serial, |serial| {
             // Note: The IDLE bit will not be set again until the RXNE bit has been set (i.e. a new
             // idle line occurs).

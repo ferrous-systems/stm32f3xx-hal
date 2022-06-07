@@ -6,7 +6,7 @@
 //!
 //! An example how to use DMA for serial, can be found at [examples/serial_dma.rs]
 //!
-//! [examples/serial_dma.rs]: https://github.com/stm32-rs/stm32f3xx-hal/blob/v0.8.0/examples/serial_dma.rs
+//! [examples/serial_dma.rs]: https://github.com/stm32-rs/stm32f3xx-hal/blob/v0.9.0/examples/serial_dma.rs
 
 // To learn about most of the ideas implemented here, check out the DMA section
 // of the Embedonomicon: https://docs.rust-embedded.org/embedonomicon/dma.html
@@ -446,12 +446,13 @@ macro_rules! dma {
             pub mod $dmax {
                 use super::*;
                 use crate::pac::$DMAx;
+                use crate::rcc::Enable;
 
                 impl DmaExt for $DMAx {
                     type Channels = Channels;
 
                     fn split(self, ahb: &mut AHB) -> Channels {
-                        ahb.enr().modify(|_, w| w.$dmaxen().set_bit());
+                        <$DMAx>::enable(ahb);
 
                         let mut channels = Channels {
                             $( $chi: $Ci { _0: () }, )+
@@ -514,7 +515,7 @@ macro_rules! dma {
 
                             // NOTE(unsafe) atomic write to a stateless register
                             unsafe {
-                                &(*$DMAx::ptr()).ifcr.write(|w| match event {
+                                (*$DMAx::ptr()).ifcr.write(|w| match event {
                                     HalfTransfer => w.$chtifi().set_bit(),
                                     TransferComplete => w.$ctcifi().set_bit(),
                                     TransferError => w.$cteifi().set_bit(),

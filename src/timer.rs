@@ -3,8 +3,12 @@
 //! Abstractions of the internal timer peripherals
 //! The timer modules implements the [`CountDown`] and [`Periodic`] traits.
 //!
-//! [Read]: embedded_hal::timer::CountDown
-//! [Write]: embedded_hal::timer::Periodic
+//! ## Examples
+//!
+//! Check out [examples/adc.rs], where a [`Periodic`] timer is used to wake
+//! up the main-loop regularly.
+//!
+//! [examples/adc.rs]: https://github.com/stm32-rs/stm32f3xx-hal/blob/v0.9.0/examples/adc.rs
 
 use core::convert::{From, TryFrom};
 
@@ -15,8 +19,8 @@ use void::Void;
 
 use crate::hal::timer::{Cancel, CountDown, Periodic};
 #[allow(unused)]
-use crate::pac::RCC;
-use crate::rcc::{Clocks, APB1, APB2};
+use crate::pac::{self, RCC};
+use crate::rcc::{self, Clocks};
 use crate::time::{duration, fixed_point::FixedPoint, rate::Hertz};
 
 mod interrupts;
@@ -61,7 +65,7 @@ impl MonoTimer {
     /// Returns an `Instant` corresponding to "now"
     pub fn now(&self) -> Instant {
         Instant {
-            now: DWT::get_cycle_count(),
+            now: DWT::cycle_count(),
         }
     }
 }
@@ -76,7 +80,7 @@ pub struct Instant {
 impl Instant {
     /// Ticks elapsed since the `Instant` was created
     pub fn elapsed(self) -> u32 {
-        DWT::get_cycle_count().wrapping_sub(self.now)
+        DWT::cycle_count().wrapping_sub(self.now)
     }
 }
 
@@ -105,8 +109,9 @@ where
     TIM: Instance,
 {
     /// Configures a TIM peripheral as a periodic count down timer
-    pub fn new(tim: TIM, clocks: Clocks, apb: &mut <TIM as Instance>::APB) -> Self {
-        TIM::enable_clock(apb);
+    pub fn new(tim: TIM, clocks: Clocks, apb: &mut <TIM as rcc::RccBus>::Bus) -> Self {
+        TIM::enable(apb);
+        TIM::reset(apb);
 
         Timer { clocks, tim }
     }
@@ -176,7 +181,32 @@ where
         }
     }
 
-    /// Check if an interrupt event happend.
+    /// Check if an interrupt is configured for the [`Event`]
+    #[inline]
+    pub fn is_interrupt_configured(&self, event: Event) -> bool {
+        match event {
+            Event::Update => self.tim.is_dier_uie_set(),
+        }
+    }
+
+    // TODO: Add to other implementations as well (Serial, ...)
+    /// Check which interrupts are enabled for all [`Event`]s
+    #[cfg(feature = "enumset")]
+    #[cfg_attr(docsrs, doc(cfg(feature = "enumset")))]
+    #[inline]
+    pub fn configured_interrupts(&mut self) -> EnumSet<Event> {
+        let mut events = EnumSet::new();
+
+        for event in EnumSet::<Event>::all().iter() {
+            if self.is_interrupt_configured(event) {
+                events |= event;
+            }
+        }
+
+        events
+    }
+
+    /// Check if an interrupt event happened.
     pub fn is_event_triggered(&self, event: Event) -> bool {
         match event {
             Event::Update => self.tim.is_sr_uief_set(),
@@ -259,9 +289,9 @@ where
         self.tim.set_arr(arr);
 
         // Ensure that the below procedure does not create an unexpected interrupt.
-        let is_update_interrupt_active = self.tim.is_dier_uie_set();
+        let is_update_interrupt_active = self.is_interrupt_configured(Event::Update);
         if is_update_interrupt_active {
-            self.tim.set_dier_uie(false);
+            self.configure_interrupt(Event::Update, false);
         }
 
         // Trigger an update event to load the prescaler value to the clock The above line raises
@@ -271,7 +301,7 @@ where
         self.clear_event(Event::Update);
 
         if is_update_interrupt_active {
-            self.tim.set_dier_uie(true);
+            self.configure_interrupt(Event::Update, true)
         }
 
         // start counter
@@ -339,129 +369,72 @@ pub trait CommonRegisterBlock: crate::private::Sealed {
 
 /// Associated clocks with timers
 pub trait Instance:
-    CommonRegisterBlock + crate::interrupts::InterruptNumber + crate::private::Sealed
+    CommonRegisterBlock
+    + crate::interrupts::InterruptNumber
+    + crate::private::Sealed
+    + rcc::Enable
+    + rcc::Reset
 {
-    /// Peripheral bus instance which is responsible for the peripheral
-    type APB;
-
-    #[doc(hidden)]
-    fn enable_clock(apb: &mut Self::APB);
     #[doc(hidden)]
     fn clock(clocks: &Clocks) -> Hertz;
 }
 
 macro_rules! timer {
-    ($({
-        $TIMX:ident: (
-            $timXen:ident,
-            $timXrst:ident,
-            $timXsw:ident,
-            $timerXclock:ident,
-            $APB:ident,
-            $pclkX:ident,
-            $PCLKX:ident,
-            $ppreX:ident,
-            $INTERRUPT:ident
-        ),
-    },)+) => {
-        $(
-            impl CommonRegisterBlock for crate::pac::$TIMX {
-                #[inline]
-                fn set_cr1_cen(&mut self, enable: bool) {
-                    self.cr1.modify(|_, w| w.cen().bit(enable));
-                }
-
-                #[inline]
-                fn is_cr1_cen_set(&mut self) -> bool {
-                    self.cr1.read().cen().bit()
-                }
-
-                #[inline]
-                fn set_dier_uie(&mut self, enable: bool) {
-                    self.dier.modify(|_, w| w.uie().bit(enable));
-                }
-
-                #[inline]
-                fn is_dier_uie_set(&self) -> bool {
-                    self.dier.read().uie().bit()
-                }
-
-                #[inline]
-                fn clear_sr_uief(&mut self) {
-                    self.sr.modify(|_, w| w.uif().clear())
-                }
-
-                #[inline]
-                fn clear_sr(&mut self) {
-                    // SAFETY: This atomic write clears all flags and ignores the reserverd bit fields.
-                    self.sr.write(|w| unsafe { w.bits(0) });
-                }
-
-                #[inline]
-                fn is_sr_uief_set(&self) -> bool {
-                    self.sr.read().uif().is_update_pending()
-                }
-
-                #[inline]
-                fn set_egr_ug(&mut self) {
-                    // NOTE(write): uses all bits in this register.
-                    self.egr.write(|w| w.ug().update());
-                }
-
-                #[inline]
-                fn set_psc(&mut self, psc: u16) {
-                    // NOTE(write): uses all bits in this register.
-                    self.psc.write(|w| w.psc().bits(psc));
-                }
-
-                #[inline]
-                fn set_arr(&mut self, arr: u16) {
-                    // TODO (sh3rm4n)
-                    // self.tim.arr.write(|w| { w.arr().bits(arr) });
-                    self.arr.write(|w| unsafe { w.bits(u32::from(arr)) });
-                }
+    ($TIMX:ident) => {
+        impl CommonRegisterBlock for crate::pac::$TIMX {
+            #[inline]
+            fn set_cr1_cen(&mut self, enable: bool) {
+                self.cr1.modify(|_, w| w.cen().bit(enable));
             }
 
-            impl crate::private::Sealed for crate::pac::$TIMX {}
-            impl Instance for crate::pac::$TIMX {
-                type APB = $APB;
-
-                #[inline]
-                fn enable_clock(apb: &mut Self::APB) {
-                    // enable and reset peripheral to a clean slate state
-                    apb.enr().modify(|_, w| w.$timXen().enabled());
-                    apb.rstr().modify(|_, w| w.$timXrst().reset());
-                    apb.rstr().modify(|_, w| w.$timXrst().clear_bit());
-                }
-
-                #[inline]
-                fn clock(clocks: &Clocks) -> Hertz {
-                    $timerXclock(clocks)
-                }
-
-
+            #[inline]
+            fn is_cr1_cen_set(&mut self) -> bool {
+                self.cr1.read().cen().bit()
             }
-        )+
-    };
 
-    ([ $(($X:literal, $APB:literal)),+ ]) => {
-        paste::paste! {
-            timer! {
-                $(
-                    {
-                        [<TIM $X>]: (
-                            [<tim $X en>],
-                            [<tim $X rst>],
-                            [<tim $X sw>],
-                            [<timer $X clock>],
-                            [<APB $APB>],
-                            [<pclk $APB>],
-                            [<PCLK $APB>],
-                            [<ppre $APB>],
-                            [<TIM $X _INTERRUPT_TYPES>]
-                        ),
-                    },
-                )+
+            #[inline]
+            fn set_dier_uie(&mut self, enable: bool) {
+                self.dier.modify(|_, w| w.uie().bit(enable));
+            }
+
+            #[inline]
+            fn is_dier_uie_set(&self) -> bool {
+                self.dier.read().uie().bit()
+            }
+
+            #[inline]
+            fn clear_sr_uief(&mut self) {
+                self.sr.modify(|_, w| w.uif().clear())
+            }
+
+            #[inline]
+            fn clear_sr(&mut self) {
+                // SAFETY: This atomic write clears all flags and ignores the reserverd bit fields.
+                self.sr.write(|w| unsafe { w.bits(0) });
+            }
+
+            #[inline]
+            fn is_sr_uief_set(&self) -> bool {
+                self.sr.read().uif().is_update_pending()
+            }
+
+            #[inline]
+            fn set_egr_ug(&mut self) {
+                // NOTE(write): uses all bits in this register.
+                self.egr.write(|w| w.ug().update());
+            }
+
+            #[inline]
+            fn set_psc(&mut self, psc: u16) {
+                // NOTE(write): uses all bits in this register.
+                self.psc.write(|w| w.psc().bits(psc));
+            }
+
+            #[inline]
+            fn set_arr(&mut self, arr: u16) {
+                // TODO (sh3rm4n)
+                // self.tim.arr.write(|w| { w.arr().bits(arr) });
+                self.arr.write(|w| unsafe { w.bits(u32::from(arr)) });
             }
         }
     };
@@ -469,74 +442,68 @@ macro_rules! timer {
 
 #[allow(unused)]
 macro_rules! timer_var_clock {
-    ($($timerXclock:ident, $timXsw:ident, $pclkX:ident, $ppreX:ident),+) => {
+    ($($TIMX:ident, $timXsw:ident),+) => {
         $(
-            /// Return the currently set source frequency for the UART peripheral
-            /// depending on the clock source.
-            fn $timerXclock(clocks: &Clocks) -> Hertz {
-                // SAFETY: Atomic read with no side-effects.
-                match unsafe {(*RCC::ptr()).cfgr3.read().$timXsw().variant()} {
-                    // PCLK2 is really the wrong name, as depending on the type of chip, it is
-                    // pclk1 or pclk2. This distinction is however not made in stm32f3.
-                    crate::pac::rcc::cfgr3::TIM1SW_A::PCLK2 =>  {
-                        // Conditional mutliplier after APB prescaler is used.
-                        // See RM0316 Fig 13.
-                        if clocks.$ppreX() > 1 {
-                            clocks.$pclkX() * 2
-                        } else {
-                            clocks.$pclkX()
+            impl Instance for crate::pac::$TIMX {
+                #[inline]
+                fn clock(clocks: &Clocks) -> Hertz {
+                    // SAFETY: Atomic read with no side-effects.
+                    match unsafe {(*RCC::ptr()).cfgr3.read().$timXsw().variant()} {
+                        // PCLK2 is really the wrong name, as depending on the type of chip, it is
+                        // pclk1 or pclk2. This distinction is however not made in stm32f3.
+                        crate::pac::rcc::cfgr3::TIM1SW_A::PCLK2 =>  {
+                            // Conditional mutliplier after APB prescaler is used.
+                            // See RM0316 Fig 13.
+                            <pac::$TIMX as rcc::BusTimerClock>::timer_clock(clocks)
                         }
-                    }
-                    crate::pac::rcc::cfgr3::TIM1SW_A::PLL => {
-                        if let Some(pllclk) = clocks.pllclk() {
-                            pllclk * 2
-                        } else {
-                            // This state should currently not be possible,
-                            // because the software source can not be configured right now.
-                            crate::panic!("Invalid timer clock source.");
+                        crate::pac::rcc::cfgr3::TIM1SW_A::PLL => {
+                            if let Some(pllclk) = clocks.pllclk() {
+                                pllclk * 2
+                            } else {
+                                // This state should currently not be possible,
+                                // because the software source can not be configured right now.
+                                crate::panic!("Invalid timer clock source.");
+                            }
                         }
                     }
                 }
             }
+
+            timer!($TIMX);
         )+
     };
-    ([ $(($X:literal, $Y:literal, $APB:literal)),+ ]) => {
+    ($(($X:literal: $Y:literal)),+) => {
         paste::paste! {
             timer_var_clock!(
-                $([<timer $X clock>], [<tim $Y sw>], [<pclk $APB>], [<ppre $APB>]),+
+                $([<TIM $X>], [<tim $Y sw>]),+
             );
 
         }
-
-        timer!([$(($X, $APB)),+]);
     };
-    ([ $(($X:literal, $APB:literal)),+ ]) => {
-        timer_var_clock!([$(($X, $X, $APB)),+]);
+    ($($X:literal),+) => {
+        timer_var_clock!($(($X: $X)),+);
     };
 }
 
 macro_rules! timer_static_clock {
-    ($($timerXclock:ident, $pclkX:ident, $ppreX:ident),+) => {
+    ($($TIMX:ident),+) => {
         $(
-            /// Return the currently set source frequency the UART peripheral
-            /// depending on the clock source.
-            fn $timerXclock(clocks: &Clocks) -> Hertz {
-                if clocks.$ppreX() > 1 {
-                    clocks.$pclkX() * 2
-                } else {
-                    clocks.$pclkX()
+            impl Instance for crate::pac::$TIMX {
+                #[inline]
+                fn clock(clocks: &Clocks) -> Hertz {
+                    <pac::$TIMX as rcc::BusTimerClock>::timer_clock(clocks)
                 }
             }
+
+            timer!($TIMX);
         )+
     };
-    ([ $(($X:literal, $APB:literal)),+ ]) => {
+    ($($X:literal),+) => {
         paste::paste! {
             timer_static_clock!(
-                $([<timer $X clock>], [<pclk $APB>], [<ppre $APB>]),+
+                $([<TIM $X>]),+
             );
         }
-
-        timer!([$(($X, $APB)),+]);
     };
 }
 
@@ -552,39 +519,23 @@ cfg_if::cfg_if! {
     // (Interrupt::TIM7_IRQ), TIM7 has no chapter is nowwhere to be mentioned. Also tim7sw() does
     // not exsist.
     if #[cfg(feature = "svd-f301")] {
-        timer_static_clock!([(2, 1), (6, 1)]);
-        timer_var_clock!([(1, 2), (15, 2), (16, 2), (17, 2)]);
+        timer_static_clock!(2, 6);
+        timer_var_clock!(1, 15, 16, 17);
     }
 }
 
 cfg_if::cfg_if! {
     // RM0365 Fig. 12
     if #[cfg(all(feature = "svd-f302", feature = "gpio-f303"))] {
-        timer_static_clock!([
-            (2, 1),
-            (3, 1),
-            (4, 1),
-            (6, 1),
-            (15, 2),
-            (16, 2),
-            (17, 2)
-        ]);
-        timer_var_clock!([(1, 2)]);
+        timer_static_clock!(2, 3, 4, 6, 15, 16, 17);
+        timer_var_clock!(1);
     }
 
     // RM0365 Fig. 13
     else if #[cfg(all(feature = "svd-f302", feature = "gpio-f303e"))] {
-        timer_static_clock!([
-            (6, 1)
-        ]);
-        timer_var_clock!([
-            (1, 2),
-            (2, 1),
-            (15, 2),
-            (16, 2),
-            (17, 2)
-        ]);
-        timer_var_clock!([(3, 34, 1), (4, 34, 1)]);
+        timer_static_clock!(6);
+        timer_var_clock!(1, 2, 15, 16, 17);
+        timer_var_clock!((3: 34), (4: 34));
     }
 
     // RM0365 Fig. 14
@@ -593,60 +544,27 @@ cfg_if::cfg_if! {
     // (Interrupt::TIM7_IRQ), TIM7 has no chapter is nowhere to be mentioned. Also tim7sw() does
     // not exsist.
     else if #[cfg(all(feature = "svd-f302", feature = "gpio-f302"))] {
-        timer_static_clock!([
-            (2, 1),
-            (6, 1)
-        ]);
-        timer_var_clock!([
-            (1, 2),
-            (15, 2),
-            (16, 2),
-            (17, 2)
-        ]);
+        timer_static_clock!(2, 6);
+        timer_var_clock!(1, 15, 16, 17);
     }
 
     // RM0316 Fig. 13
     else if #[cfg(all(feature = "svd-f303", feature = "gpio-f303"))] {
-        timer_static_clock!([
-            (2, 1),
-            (3, 1),
-            (4, 1),
-            (6, 1),
-            (7, 1),
-            (15, 2),
-            (16, 2),
-            (17, 2)
-        ]);
-        timer_var_clock!([(1, 2), (8, 2)]);
+        timer_static_clock!(2, 3, 4, 6, 7, 15, 16, 17);
+        timer_var_clock!(1, 8);
     }
 
     // RM0316 Fig. 14
     else if #[cfg(all(feature = "svd-f303", feature = "gpio-f303e"))] {
-        timer_static_clock!([(6, 1), (7, 1)]);
-        timer_var_clock!([
-            (1, 2),
-            (2, 1),
-            (8, 2),
-            (15, 2),
-            (16, 2),
-            (17, 2),
-            (20, 2)
-        ]);
-        timer_var_clock!([(3, 34, 1), (4, 34, 1)]);
+        timer_static_clock!(6, 7);
+        timer_var_clock!(1, 2, 8, 15, 16, 17, 20);
+        timer_var_clock!((3: 34), (4: 34));
     }
 
     // RM0316 Fig. 15
     else if #[cfg(all(feature = "svd-f303", feature = "gpio-f333"))] {
-        timer_static_clock!([
-            (2, 1),
-            (3, 1),
-            (6, 1),
-            (7, 1),
-            (15, 2),
-            (16, 2),
-            (17, 2)
-        ]);
-        timer_var_clock!([(1, 2)]);
+        timer_static_clock!(2, 3, 6, 7, 15, 16, 17);
+        timer_var_clock!(1);
     }
 
     // RM0313 Fig. 12 - this clock does not deliver the information about the timers.
@@ -655,35 +573,12 @@ cfg_if::cfg_if! {
     // The information, which APB is connected to the timer, is only avaliable while looking
     // at the apb[1,2]rst registers.
     else if #[cfg(feature = "gpio-f373")] {
-        timer_static_clock!([
-            (2, 1),
-            (3, 1),
-            (4, 1),
-            (5, 1),
-            (6, 1),
-            (7, 1),
-            (12, 1),
-            (13, 1),
-            (14, 1),
-            (15, 2),
-            (16, 2),
-            (17, 2),
-            (18, 1),
-            (19, 2)
-        ]);
+        timer_static_clock!(2, 3, 4, 5, 6, 7, 12, 13, 14, 15, 16, 17, 18, 19);
     }
 
     // RM0364 Fig. 10
     else if #[cfg(all(feature = "svd-f3x4", feature = "gpio-f333"))] {
-        timer_static_clock!([
-            (2, 1),
-            (3, 1),
-            (6, 1),
-            (7, 1),
-            (15, 2),
-            (16, 2),
-            (17, 2)
-        ]);
-        timer_var_clock!([(1, 2)]);
+        timer_static_clock!(2, 3, 6, 7, 15, 16, 17);
+        timer_var_clock!(1);
     }
 }

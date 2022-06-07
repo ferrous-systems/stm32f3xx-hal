@@ -44,7 +44,7 @@ mod tests {
         let mut flash = dp.FLASH.constrain();
         let clocks = rcc.cfgr.freeze(&mut flash.acr);
 
-        // Let's use a timer, which is avaliable for every chip
+        // Let's use a timer, which is available for every chip
         let timer = Timer::new(dp.TIM2, clocks, &mut rcc.apb1);
         let mono_timer = MonoTimer::new(cp.DWT, clocks, &mut cp.DCB);
         let delay = Delay::new(cp.SYST, clocks);
@@ -105,9 +105,9 @@ mod tests {
 
             let deviation = (ratio - 1.).abs();
 
-            // Deviation is high for smaller timer durations. Higher duratinons are pretty accurate.
+            // Deviation is high for smaller timer duration. Higher duration are pretty accurate.
             // TODO: Maybe the allowed deviation should changed depending on the duration?
-            defmt::assert!(deviation < 40e-4);
+            defmt::assert!(deviation < 11e-02);
         }
         state.timer = Some(timer);
     }
@@ -120,8 +120,8 @@ mod tests {
         timer.start(10.milliseconds());
         state.delay.delay_ms(5u32);
 
-        assert!(matches!(timer.cancel(), Ok(())));
-        assert!(matches!(timer.cancel(), Err(AlreadyCancled)));
+        assert_eq!(timer.cancel(), Ok(()));
+        assert_eq!(timer.cancel(), Err(AlreadyCancled));
         state.timer = Some(timer);
     }
 
@@ -147,8 +147,8 @@ mod tests {
 fn TIM2() {
     INTERRUPT_FIRED.store(true, Ordering::SeqCst);
 
-    // Make it easy on ourselfs and just disable all interrupts.
-    // This way, the interrupt rountine dooes not have to have access to the timer peripheral,
+    // Make it easy on ourselves and just disable all interrupts.
+    // This way, the interrupt routine does not have to have access to the timer peripheral,
     // which would mean to access the internally managed state of the test module,
     // which can't be accessed right now.
     //

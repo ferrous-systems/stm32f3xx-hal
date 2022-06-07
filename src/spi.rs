@@ -4,7 +4,7 @@
 //!
 //! A usage example of the can peripheral can be found at [examples/spi.rs]
 //!
-//! [examples/spi.rs]: https://github.com/stm32-rs/stm32f3xx-hal/blob/v0.8.0/examples/spi.rs
+//! [examples/spi.rs]: https://github.com/stm32-rs/stm32f3xx-hal/blob/v0.9.0/examples/spi.rs
 
 use core::{fmt, marker::PhantomData, ops::Deref, ptr};
 
@@ -22,7 +22,7 @@ use crate::pac::{
 use crate::{
     gpio::{self, PushPull, AF5, AF6},
     rcc::{self, Clocks},
-    time::rate::{self, Hertz},
+    time::rate,
 };
 
 /// SPI error
@@ -143,7 +143,7 @@ cfg_if::cfg_if! {
 cfg_if::cfg_if! {
     if #[cfg(all(
         not(feature = "stm32f301"),
-        any(feature = "gpio-f302", feature = "gpio-f303e"),
+        any(feature = "gpio-f302", feature = "gpio-f303", feature = "gpio-f303e"),
     ))] {
         impl SckPin<SPI3> for gpio::PB3<AF6<PushPull>> {}
         impl MisoPin<SPI3> for gpio::PB4<AF6<PushPull>> {}
@@ -194,7 +194,7 @@ impl<SPI, Sck, Miso, Mosi, WORD> Spi<SPI, (Sck, Miso, Mosi), WORD> {
     ///
     /// ```
     ///
-    /// To get a better example, look [here](https://github.com/stm32-rs/stm32f3xx-hal/blob/v0.8.0/examples/spi.rs).
+    /// To get a better example, look [here](https://github.com/stm32-rs/stm32f3xx-hal/blob/v0.9.0/examples/spi.rs).
     ///
     // TODO(Sh3Rm4n): See alternative modes provided besides FullDuplex (as listed in Stm32CubeMx).
     pub fn new<Config>(
@@ -202,7 +202,7 @@ impl<SPI, Sck, Miso, Mosi, WORD> Spi<SPI, (Sck, Miso, Mosi), WORD> {
         pins: (Sck, Miso, Mosi),
         config: Config,
         clocks: Clocks,
-        apb: &mut <SPI as Instance>::APB,
+        apb: &mut <SPI as rcc::RccBus>::Bus,
     ) -> Self
     where
         SPI: Instance,
@@ -213,7 +213,8 @@ impl<SPI, Sck, Miso, Mosi, WORD> Spi<SPI, (Sck, Miso, Mosi), WORD> {
         Config: Into<config::Config>,
     {
         let config = config.into();
-        SPI::enable_clock(apb);
+        SPI::enable(apb);
+        SPI::reset(apb);
 
         let (frxth, ds) = WORD::register_config();
         spi.cr2.write(|w| {
@@ -395,38 +396,24 @@ where
 
 /// SPI instance
 pub trait Instance:
-    Deref<Target = spi1::RegisterBlock> + crate::interrupts::InterruptNumber + crate::private::Sealed
+    Deref<Target = spi1::RegisterBlock>
+    + crate::interrupts::InterruptNumber
+    + crate::private::Sealed
+    + rcc::Enable
+    + rcc::Reset
+    + rcc::BusClock
 {
-    /// Peripheral bus instance which is responsible for the peripheral
-    type APB;
-
-    #[doc(hidden)]
-    fn enable_clock(apb1: &mut Self::APB);
-    #[doc(hidden)]
-    fn clock(clocks: &Clocks) -> Hertz;
 }
 
 macro_rules! spi {
-    ($($SPIX:ident: ($APBX:ident, $spiXen:ident, $spiXrst:ident, $pclkX:ident),)+) => {
+    ($($SPIX:ident: ($APBX:ident, $pclkX:ident),)+) => {
         $(
-            impl crate::private::Sealed for pac::$SPIX {}
             impl crate::interrupts::InterruptNumber for pac::$SPIX {
                 type Interrupt = Interrupt;
                 const INTERRUPT: Self::Interrupt = interrupts::$SPIX;
             }
 
-            impl Instance for pac::$SPIX {
-                type APB = rcc::$APBX;
-                fn enable_clock(apb: &mut Self::APB) {
-                    apb.enr().modify(|_, w| w.$spiXen().enabled());
-                    apb.rstr().modify(|_, w| w.$spiXrst().reset());
-                    apb.rstr().modify(|_, w| w.$spiXrst().clear_bit());
-                }
-
-                fn clock(clocks: &Clocks) -> Hertz {
-                    clocks.$pclkX()
-                }
-            }
+            impl Instance for pac::$SPIX { }
 
             #[cfg(feature = "defmt")]
             impl<Pins> defmt::Format for Spi<pac::$SPIX, Pins> {
@@ -461,8 +448,6 @@ macro_rules! spi {
                 $(
                     [<SPI $X>]: (
                         [<APB $APB>],
-                        [<spi $X en>],
-                        [<spi $X rst>],
                         [<pclk $APB>]
                     ),
                 )+

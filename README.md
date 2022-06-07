@@ -4,7 +4,7 @@
 [![Crate](https://img.shields.io/crates/v/stm32f3xx-hal.svg)](https://crates.io/crates/stm32f3xx-hal)
 [![Docs](https://docs.rs/stm32f3xx-hal/badge.svg)](https://docs.rs/stm32f3xx-hal)
 [![Crates.io](https://img.shields.io/crates/d/stm32f3xx-hal.svg)](https://crates.io/crates/stm32f3xx-hal)
-![Minimum Supported Rust Version](https://img.shields.io/badge/rustc-1.52+-blue.svg)
+![Minimum Supported Rust Version](https://img.shields.io/badge/rustc-1.54+-blue.svg)
 
 `stm32f3xx-hal` contains a multi device hardware abstraction on top of the
 peripheral access API for the STMicro STM32F3 series microcontrollers. The
@@ -57,7 +57,7 @@ cortex-m-rt = { version = "0.6.13", features = ["device"] }
 # Panic behaviour, see https://crates.io/keywords/panic-impl for alternatives
 panic-halt = "0.2.0"
 # Replace stm32f303xc with your target chip, see next section for more info
-stm32f3xx-hal = { version = "0.8.0", features = ["ld", "rt", "stm32f303xc"] }
+stm32f3xx-hal = { version = "0.9.0", features = ["ld", "rt", "stm32f303xc"] }
 ```
 
 We also need to tell Rust about target architecture and how to link our
@@ -139,7 +139,7 @@ See the [examples folder](examples) for more example programs.
 
 ## Minimum Supported Rust Version (MSRV)
 
-This crate is guaranteed to compile on stable Rust 1.52.0 and up. It *might*
+This crate is guaranteed to compile on stable Rust 1.54.0 and up. It *might*
 compile with older versions but that may change in any new patch release.
 
 <!-- This should not prevent anyone to use newer features. -->
@@ -151,4 +151,15 @@ compile with older versions but that may change in any new patch release.
 
 ## License
 
-[0-clause BSD license](LICENSE-0BSD.txt).
+Licensed under either of
+
+* Apache License, Version 2.0 ([LICENSE-APACHE](LICENSE-APACHE) or
+  <http://www.apache.org/licenses/LICENSE-2.0>)
+* MIT license ([LICENSE-MIT](LICENSE-MIT) or
+  <http://opensource.org/licenses/MIT>)
+
+at your option.
+
+Unless you explicitly state otherwise, any contribution intentionally submitted
+for inclusion in the work by you, as defined in the Apache-2.0 license, shall be
+dual licensed as above, without any additional terms or conditions.
