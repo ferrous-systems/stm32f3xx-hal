@@ -482,6 +482,65 @@ where
         // in this state.
         usart.cr1.modify(|_, w| w.ue().disabled());
 
+
+        let brr = Usart::clock(&clocks).integer() / config.baudrate.integer();
+        crate::assert!(brr >= 16, "impossible baud rate");
+        usart.brr.write(|w| w.brr().bits(brr as u16));
+
+        // We currently support only eight data bits as supporting a full-blown
+        // configuration gets complicated pretty fast. The USART counts data
+        // and partiy bits together so the actual amount depends on the parity
+        // selection.
+        let (m0, ps, pce) = match config.parity {
+            Parity::None => (M_A::BIT8, PS_A::EVEN, PCE_A::DISABLED),
+            Parity::Even => (M_A::BIT9, PS_A::EVEN, PCE_A::ENABLED),
+            Parity::Odd => (M_A::BIT9, PS_A::ODD, PCE_A::ENABLED),
+        };
+
+        usart
+            .cr2
+            .modify(|_, w| w.stop().variant(config.stopbits.into()));
+        usart.cr1.modify(|_, w| {
+            w.ps().variant(ps); // set parity mode
+            w.pce().variant(pce); // enable parity checking/generation
+            w.m().variant(m0); // set data bits
+            w.re().enabled(); // enable receiver
+            w.te().enabled() // enable transmitter
+        });
+
+        // Finally enable the configured UART.
+        usart.cr1.modify(|_, w| w.ue().enabled());
+
+        Self { usart, pins }
+    }
+      /// Configures a USART peripheral to provide serial communication with HW flow control
+      pub fn new_with_flow_control<Config>(
+        usart: Usart,
+        pins: (Tx, Rx),
+        config: Config,
+        clocks: Clocks,
+        apb: &mut <Usart as Instance>::APB,
+    ) -> Self
+    where
+        Usart: Instance,
+        Tx: TxPin<Usart>,
+        Rx: RxPin<Usart>,
+        Config: Into<config::Config>,
+    {
+        use config::*;
+
+        let config = config.into();
+
+        // Enable USART peripheral for any further interaction.
+        Usart::enable_clock(apb);
+        // Disable USART because some configuration bits could only be written
+        // in this state.
+        usart.cr1.modify(|_, w| w.ue().disabled());
+
+        // enable rts and cts
+        usart.cr3.modify(|_, w| w.ctse().set_bit());
+        usart.cr3.modify(|_, w| w.rtse().set_bit());
+
         let brr = Usart::clock(&clocks).integer() / config.baudrate.integer();
         crate::assert!(brr >= 16, "impossible baud rate");
         usart.brr.write(|w| w.brr().bits(brr as u16));
@@ -562,6 +621,9 @@ where
             pins: (tx_pin, rx_pin),
         }
     }
+
+
+    
 }
 
 impl<Usart, Pins> Serial<Usart, Pins>
